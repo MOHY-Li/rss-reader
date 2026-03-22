@@ -164,6 +164,7 @@ fn apply_feed_update(
             key: key.clone(),
             title: entry_title(entry),
             link: entry_link(entry),
+            published: entry.published.map(|value| value.to_rfc3339()),
             is_read: false,
         });
         new_keys.insert(key);

@@ -26,6 +26,10 @@ struct TuiState {
     entry_index: usize,
     focus: Focus,
     status: String,
+    search_query: String,
+    search_mode: bool,
+    unread_only: bool,
+    sort_desc: bool,
 }
 
 impl TuiState {
@@ -35,8 +39,12 @@ impl TuiState {
             entry_index: 0,
             focus: Focus::Feeds,
             status: String::from(
-                "q/Esc quit • Tab switch • j/k or ↑/↓ move • Enter open • r refresh",
+                "q/Esc quit • Tab switch • j/k move • / search • u unread • Enter open • r refresh",
             ),
+            search_query: String::new(),
+            search_mode: false,
+            unread_only: false,
+            sort_desc: true,
         }
     }
 }
@@ -85,12 +93,48 @@ where
 
         match event::read()? {
             Event::Key(key) => match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('q') => break,
+                KeyCode::Esc => {
+                    if state.search_mode {
+                        state.search_mode = false;
+                        state.search_query.clear();
+                        state.entry_index = 0;
+                    } else {
+                        break;
+                    }
+                }
                 KeyCode::Tab => {
                     state.focus = match state.focus {
                         Focus::Feeds => Focus::Entries,
                         Focus::Entries => Focus::Feeds,
                     };
+                }
+                KeyCode::Char('/') => {
+                    state.search_mode = true;
+                    state.search_query.clear();
+                    state.entry_index = 0;
+                    state.status =
+                        String::from("Search: type to filter, Enter to apply, Esc to clear");
+                }
+                KeyCode::Char('u') => {
+                    state.unread_only = !state.unread_only;
+                    state.entry_index = 0;
+                }
+                KeyCode::Char('s') => {
+                    state.sort_desc = !state.sort_desc;
+                    state.entry_index = 0;
+                }
+                KeyCode::Backspace if state.search_mode => {
+                    state.search_query.pop();
+                    state.entry_index = 0;
+                }
+                KeyCode::Enter if state.search_mode => {
+                    state.search_mode = false;
+                    state.entry_index = 0;
+                }
+                KeyCode::Char(ch) if state.search_mode => {
+                    state.search_query.push(ch);
+                    state.entry_index = 0;
                 }
                 KeyCode::Char('j') | KeyCode::Down => match state.focus {
                     Focus::Feeds => {
@@ -100,7 +144,7 @@ where
                     }
                     Focus::Entries => {
                         let feeds = collect_feeds(app);
-                        let entries = selected_entries(&feeds, state.feed_index);
+                        let entries = filtered_entries(&feeds, state.feed_index, state);
                         move_selection(&mut state.entry_index, entries.len(), 1);
                     }
                 },
@@ -112,7 +156,7 @@ where
                     }
                     Focus::Entries => {
                         let feeds = collect_feeds(app);
-                        let entries = selected_entries(&feeds, state.feed_index);
+                        let entries = filtered_entries(&feeds, state.feed_index, state);
                         move_selection(&mut state.entry_index, entries.len(), -1);
                     }
                 },
@@ -120,20 +164,22 @@ where
                     let selection = {
                         let feeds = collect_feeds(app);
                         feeds.get(state.feed_index).and_then(|feed_ref| {
-                            feed_ref.feed.entries.get(state.entry_index).map(|entry| {
+                            let entries = filtered_entries(&feeds, state.feed_index, state);
+                            entries.get(state.entry_index).map(|entry_ref| {
                                 (
                                     feed_ref.key.clone(),
-                                    entry.link.clone(),
-                                    entry.title.clone(),
+                                    entry_ref.index,
+                                    entry_ref.entry.link.clone(),
+                                    entry_ref.entry.title.clone(),
                                 )
                             })
                         })
                     };
 
-                    if let Some((feed_key, link, title)) = selection {
+                    if let Some((feed_key, entry_index, link, title)) = selection {
                         let open_result = open::that(&link);
                         if let Some(feed) = app.feeds.get_mut(&feed_key) {
-                            if let Some(entry) = feed.entries.get_mut(state.entry_index) {
+                            if let Some(entry) = feed.entries.get_mut(entry_index) {
                                 entry.is_read = true;
                             }
                         }
@@ -169,7 +215,7 @@ where
 fn normalize_state(app: &AppState, state: &mut TuiState) {
     let feeds = collect_feeds(app);
     normalize_selection(&mut state.feed_index, feeds.len());
-    let entries = selected_entries(&feeds, state.feed_index);
+    let entries = filtered_entries(&feeds, state.feed_index, state);
     normalize_selection(&mut state.entry_index, entries.len());
 }
 
@@ -214,18 +260,60 @@ fn feed_label(feed: &FeedState) -> String {
     feed.title.clone().unwrap_or_else(|| feed.feed_url.clone())
 }
 
-fn selected_entries<'a>(feeds: &[FeedRef<'a>], index: usize) -> &'a [EntryView] {
-    feeds
+struct EntryRef<'a> {
+    index: usize,
+    entry: &'a EntryView,
+}
+
+fn filtered_entries<'a>(
+    feeds: &[FeedRef<'a>],
+    index: usize,
+    state: &TuiState,
+) -> Vec<EntryRef<'a>> {
+    let entries = feeds
         .get(index)
         .map(|feed_ref| feed_ref.feed.entries.as_slice())
-        .unwrap_or(&[])
+        .unwrap_or(&[]);
+
+    let query = state.search_query.trim().to_lowercase();
+    let mut filtered: Vec<EntryRef<'a>> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| {
+            if state.unread_only && entry.is_read {
+                return false;
+            }
+            if query.is_empty() {
+                return true;
+            }
+            let title = entry.title.to_lowercase();
+            let link = entry.link.to_lowercase();
+            title.contains(&query) || link.contains(&query)
+        })
+        .map(|(idx, entry)| EntryRef { index: idx, entry })
+        .collect();
+
+    filtered.sort_by(|a, b| {
+        let left = a.entry.published.as_deref().unwrap_or("");
+        let right = b.entry.published.as_deref().unwrap_or("");
+        if state.sort_desc {
+            right.cmp(left)
+        } else {
+            left.cmp(right)
+        }
+    });
+    filtered
 }
 
 fn draw_ui(frame: &mut Frame, app: &AppState, state: &mut TuiState) {
     let feeds = collect_feeds(app);
     let feed_selected = normalize_selection(&mut state.feed_index, feeds.len());
-    let entries = selected_entries(&feeds, state.feed_index);
+    let entries = filtered_entries(&feeds, state.feed_index, state);
     let entry_selected = normalize_selection(&mut state.entry_index, entries.len());
+    let total_entries = feeds
+        .get(state.feed_index)
+        .map(|feed_ref| feed_ref.feed.entries.len())
+        .unwrap_or(0);
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -236,10 +324,28 @@ fn draw_ui(frame: &mut Frame, app: &AppState, state: &mut TuiState) {
         ])
         .split(frame.area());
 
+    let search_label = if state.search_query.is_empty() {
+        String::from("Search: (none)")
+    } else {
+        format!("Search: {}", state.search_query)
+    };
+    let unread_label = if state.unread_only {
+        "Unread: on"
+    } else {
+        "Unread: off"
+    };
+    let sort_label = if state.sort_desc {
+        "Sort: new→old"
+    } else {
+        "Sort: old→new"
+    };
     let title = Paragraph::new(Line::from(vec![
         Span::styled("RSS Reader", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(format!("  Feeds: {}", feeds.len())),
-        Span::raw(format!("  Entries: {}", entries.len())),
+        Span::raw(format!("  Entries: {}/{}", entries.len(), total_entries)),
+        Span::raw(format!("  {}", unread_label)),
+        Span::raw(format!("  {}", sort_label)),
+        Span::raw(format!("  {}", search_label)),
     ]));
     frame.render_widget(title, layout[0]);
 
@@ -261,7 +367,8 @@ fn draw_ui(frame: &mut Frame, app: &AppState, state: &mut TuiState) {
 
     let entry_items: Vec<ListItem> = entries
         .iter()
-        .map(|entry| {
+        .map(|entry_ref| {
+            let entry = entry_ref.entry;
             let prefix = if entry.is_read { "✓" } else { "•" };
             ListItem::new(format!("{} {}", prefix, entry.title))
         })

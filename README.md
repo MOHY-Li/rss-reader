@@ -55,6 +55,9 @@ State is persisted at `~/.config/rss-reader/state.json`.
 - `Tab` to switch panes
 - `Enter` to open the selected item
 - `r` to refresh
+- `/` to search (type, Enter to apply, Esc to clear)
+- `u` to toggle unread-only
+- `s` to toggle sort order (new/old)
 - `q` or `Esc` to quit
 
 ## Notes
