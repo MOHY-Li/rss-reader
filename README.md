@@ -15,6 +15,11 @@ cargo build
 cargo run
 ```
 
+After installation (Homebrew), run:
+```bash
+rss
+```
+
 Default feeds are `https://hnrss.org/frontpage` and `https://tech.meituan.com/feed/` when no feed is provided.
 
 ```bash
