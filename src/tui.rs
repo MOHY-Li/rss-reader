@@ -77,7 +77,7 @@ impl TuiState {
             entry_index: 0,
             focus: Focus::Feeds,
             help: String::from(
-                "q quit • Esc/← back • Enter/→ enter • j/k move • / search • s sort • a add/import • r refresh",
+                "q quit • Esc/← back • Enter/→ enter • j/k move • / search • s sort • a add/import • d delete • r refresh",
             ),
             notice: None,
             search_query: String::new(),
@@ -162,6 +162,11 @@ where
                     KeyCode::Char('a') => {
                         state.input_mode = Some(InputMode::AddFeed);
                         state.input_buffer.clear();
+                    }
+                    KeyCode::Char('d') => {
+                        if state.focus == Focus::Feeds {
+                            delete_selected_feed(app, state);
+                        }
                     }
                     KeyCode::Char('j') | KeyCode::Down => match state.focus {
                         Focus::Feeds => {
@@ -264,6 +269,28 @@ fn move_selection(index: &mut usize, len: usize, delta: isize) {
     let max = len.saturating_sub(1) as isize;
     let next = (*index as isize + delta).clamp(0, max);
     *index = next as usize;
+}
+
+fn delete_selected_feed(app: &mut AppState, state: &mut TuiState) {
+    let feeds = collect_feeds(app);
+    let Some(feed_ref) = feeds.get(state.feed_index) else {
+        state.notice = Some(String::from("No feed selected"));
+        return;
+    };
+    let key = feed_ref.key.clone();
+    if app.feeds.remove(&key).is_some() {
+        state.notice = Some(String::from("Feed deleted"));
+        state.entry_index = 0;
+        if state.feed_index > 0 {
+            state.feed_index -= 1;
+        }
+        if app.feeds.is_empty() {
+            state.feed_index = 0;
+            state.focus = Focus::Feeds;
+        }
+    } else {
+        state.notice = Some(String::from("Feed not found"));
+    }
 }
 
 struct FeedRef<'a> {
