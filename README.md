@@ -49,7 +49,7 @@ cargo run -- --feeds feeds.txt --user-agent "my-reader/1.0"
 ```
 
 You can also add feeds from the TUI:
-- Press `a` to add a single feed URL or import a feeds file (same format as `--feeds`)
+- Press `a` to open a modal input for a feed URL or a feeds file path (same format as `--feeds`)
 
 State is persisted at `~/.config/rss-reader/state.json`.
 
@@ -58,10 +58,10 @@ State is persisted at `~/.config/rss-reader/state.json`.
 - `Enter` or `→` to enter feed / open item (opens browser)
 - `Esc` or `←` to go back
 - `r` to refresh
-- `/` to search (type, Enter to apply, Esc to clear)
+- `/` to search (modal input; Enter to apply, Esc to cancel)
 - `s` to cycle sort modes (new→old, old→new, unread, read)
 - `a` to add a feed URL or import feeds from a file
-- `d` to delete the selected feed
+- `d` to delete the selected feed (confirm with y/n)
 - `q` to quit
 
 ## Notes
