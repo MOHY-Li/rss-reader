@@ -49,8 +49,7 @@ cargo run -- --feeds feeds.txt --user-agent "my-reader/1.0"
 ```
 
 You can also add feeds from the TUI:
-- Press `a` to add a single feed URL
-- Press `i` to import a feeds file (same format as `--feeds`)
+- Press `a` to add a single feed URL or import a feeds file (same format as `--feeds`)
 
 State is persisted at `~/.config/rss-reader/state.json`.
 
@@ -61,12 +60,11 @@ State is persisted at `~/.config/rss-reader/state.json`.
 - `r` to refresh
 - `/` to search (type, Enter to apply, Esc to clear)
 - `s` to cycle sort modes (new→old, old→new, unread, read)
-- `a` to add a feed URL
-- `i` to import feeds from a file
+- `a` to add a feed URL or import feeds from a file
 - `q` to quit
 
 ## Notes
 - The reader keeps a rolling in-memory set of item IDs/links to avoid duplicates.
 - If a feed lacks IDs and links, it falls back to title/summary-based keys.
 - Interval and seen-cap values are clamped to at least 1 to avoid busy loops or empty caches.
-- Reader view shows RSS content or summary inline.
+- Entries open in your browser.
