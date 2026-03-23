@@ -61,6 +61,7 @@ State is persisted at `~/.config/rss-reader/state.json`.
 - `/` to search (type, Enter to apply, Esc to clear)
 - `s` to cycle sort modes (new→old, old→new, unread, read)
 - `a` to add a feed URL or import feeds from a file
+- `d` to delete the selected feed
 - `q` to quit
 
 ## Notes
