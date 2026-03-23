@@ -725,7 +725,6 @@ fn insert_feed(app: &mut AppState, feed_url: &str) -> bool {
             title: None,
             entries: Vec::new(),
             seen_keys: Vec::new(),
-            read_keys: Vec::new(),
         },
     );
     true

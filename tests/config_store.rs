@@ -98,7 +98,6 @@ fn save_and_load_state_round_trip() {
                 is_read: false,
             }],
             seen_keys: vec!["entry-1".to_string()],
-            read_keys: Vec::new(),
         },
     );
 

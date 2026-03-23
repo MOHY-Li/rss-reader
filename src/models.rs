@@ -19,7 +19,6 @@ pub struct FeedState {
     pub title: Option<String>,
     pub entries: Vec<EntryView>,
     pub seen_keys: Vec<String>,
-    pub read_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
