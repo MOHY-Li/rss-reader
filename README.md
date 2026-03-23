@@ -56,7 +56,7 @@ State is persisted at `~/.config/rss-reader/state.json`.
 
 ## Keybindings
 - `j`/`k` or arrow keys to move
-- `Enter` or `→` to enter feed / open item
+- `Enter` or `→` to enter feed / open item (opens browser)
 - `Esc` or `←` to go back
 - `r` to refresh
 - `/` to search (type, Enter to apply, Esc to clear)

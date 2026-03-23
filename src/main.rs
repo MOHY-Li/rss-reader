@@ -62,17 +62,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     };
 
-    let article_client = client.clone();
-    let article_handle = tokio::runtime::Handle::current();
-    let fetch_full = move |url: &str| -> io::Result<String> {
-        tokio::task::block_in_place(|| {
-            article_handle
-                .block_on(fetcher::fetch_article_html(&article_client, url))
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
-        })
-    };
-
-    tui::run_tui(&mut app_state, refresh, fetch_full)?;
+    tui::run_tui(&mut app_state, refresh)?;
     store::save_state(&state_path, &app_state)?;
     Ok(())
 }
