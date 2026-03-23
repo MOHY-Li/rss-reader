@@ -130,7 +130,7 @@ impl Args {
     }
 }
 
-fn parse_feeds_file(path: &PathBuf) -> Result<Vec<String>, FeedResolveError> {
+pub(crate) fn parse_feeds_file(path: &PathBuf) -> Result<Vec<String>, FeedResolveError> {
     let contents = fs::read_to_string(path).map_err(|source| FeedResolveError::Io {
         path: path.clone(),
         source,
@@ -149,7 +149,10 @@ fn parse_feeds_file(path: &PathBuf) -> Result<Vec<String>, FeedResolveError> {
     Ok(feeds)
 }
 
-fn validate_feed_url(value: &str, line: Option<usize>) -> Result<String, FeedResolveError> {
+pub(crate) fn validate_feed_url(
+    value: &str,
+    line: Option<usize>,
+) -> Result<String, FeedResolveError> {
     url::Url::parse(value)
         .map(|_| value.to_string())
         .map_err(|_| FeedResolveError::InvalidUrl {

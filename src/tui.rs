@@ -1,3 +1,4 @@
+use crate::config;
 use crate::models::{AppState, EntryView, FeedState};
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -13,6 +14,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -21,20 +23,55 @@ enum Focus {
     Reader,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortMode {
+    NewFirst,
+    OldFirst,
+    UnreadOnly,
+    ReadOnly,
+}
+
+impl SortMode {
+    fn next(self) -> Self {
+        match self {
+            SortMode::NewFirst => SortMode::OldFirst,
+            SortMode::OldFirst => SortMode::UnreadOnly,
+            SortMode::UnreadOnly => SortMode::ReadOnly,
+            SortMode::ReadOnly => SortMode::NewFirst,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            SortMode::NewFirst => "Sort: new→old",
+            SortMode::OldFirst => "Sort: old→new",
+            SortMode::UnreadOnly => "Filter: unread",
+            SortMode::ReadOnly => "Filter: read",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    Search,
+    AddFeed,
+    ImportFeeds,
+}
+
 #[derive(Debug, Clone)]
 struct TuiState {
     feed_index: usize,
     entry_index: usize,
     focus: Focus,
-    status: String,
     help: String,
+    notice: Option<String>,
     reader_offset: usize,
     reader_feed_key: Option<String>,
     reader_entry_key: Option<String>,
     search_query: String,
-    search_mode: bool,
-    unread_only: bool,
-    sort_desc: bool,
+    input_mode: Option<InputMode>,
+    input_buffer: String,
+    sort_mode: SortMode,
 }
 
 impl TuiState {
@@ -43,17 +80,17 @@ impl TuiState {
             feed_index: 0,
             entry_index: 0,
             focus: Focus::Feeds,
-            status: String::from("Ready"),
             help: String::from(
-                "q quit • Esc/← back • Enter/→ enter • j/k move • / search • u unread • s sort • r refresh",
+                "q quit • Esc/← back • Enter/→ enter • j/k move • / search • s sort • a add • i import • r refresh",
             ),
+            notice: None,
             reader_offset: 0,
             reader_feed_key: None,
             reader_entry_key: None,
             search_query: String::new(),
-            search_mode: false,
-            unread_only: false,
-            sort_desc: true,
+            input_mode: None,
+            input_buffer: String::new(),
+            sort_mode: SortMode::NewFirst,
         }
     }
 }
@@ -70,13 +107,8 @@ where
     terminal.clear()?;
 
     let mut state = TuiState::new();
-    match refresh(app) {
-        Ok(()) => {
-            state.status = String::from("Refresh complete");
-        }
-        Err(err) => {
-            state.status = format!("Refresh failed: {}", err);
-        }
+    if let Err(err) = refresh(app) {
+        state.notice = Some(format!("Refresh failed: {}", err));
     }
     let result = run_loop(&mut terminal, app, &mut state, &mut refresh);
 
@@ -101,133 +133,123 @@ where
         terminal.draw(|frame| draw_ui(frame, app, state))?;
 
         match event::read()? {
-            Event::Key(key) => match key.code {
-                KeyCode::Char('q') => break,
-                KeyCode::Esc => {
-                    if state.search_mode {
-                        state.search_mode = false;
+            Event::Key(key) => {
+                if key.code == KeyCode::Char('q') {
+                    break;
+                }
+
+                if state.input_mode.is_some() {
+                    handle_input_key(app, state, refresh, key.code);
+                    continue;
+                }
+
+                match key.code {
+                    KeyCode::Esc => {
+                        if state.focus == Focus::Reader {
+                            state.focus = Focus::Entries;
+                            state.reader_offset = 0;
+                        } else if state.focus == Focus::Entries {
+                            state.focus = Focus::Feeds;
+                            state.entry_index = 0;
+                        }
+                    }
+                    KeyCode::Left => {
+                        if state.focus == Focus::Reader {
+                            state.focus = Focus::Entries;
+                            state.reader_offset = 0;
+                        } else if state.focus == Focus::Entries {
+                            state.focus = Focus::Feeds;
+                            state.entry_index = 0;
+                        }
+                    }
+                    KeyCode::Char('/') => {
+                        state.input_mode = Some(InputMode::Search);
+                        state.input_buffer.clear();
                         state.search_query.clear();
                         state.entry_index = 0;
-                    } else if state.focus == Focus::Reader {
-                        state.focus = Focus::Entries;
-                        state.reader_offset = 0;
-                    } else if state.focus == Focus::Entries {
-                        state.focus = Focus::Feeds;
-                        state.entry_index = 0;
-                    } else {
-                        state.status = String::from("Press q to quit");
                     }
-                }
-                KeyCode::Left => {
-                    if state.focus == Focus::Reader {
-                        state.focus = Focus::Entries;
-                        state.reader_offset = 0;
-                    } else if state.focus == Focus::Entries {
-                        state.focus = Focus::Feeds;
+                    KeyCode::Char('s') => {
+                        state.sort_mode = state.sort_mode.next();
                         state.entry_index = 0;
                     }
-                }
-                KeyCode::Char('/') => {
-                    state.search_mode = true;
-                    state.search_query.clear();
-                    state.entry_index = 0;
-                    state.status =
-                        String::from("Search: type to filter, Enter to apply, Esc to clear");
-                }
-                KeyCode::Char('u') => {
-                    state.unread_only = !state.unread_only;
-                    state.entry_index = 0;
-                }
-                KeyCode::Char('s') => {
-                    state.sort_desc = !state.sort_desc;
-                    state.entry_index = 0;
-                }
-                KeyCode::Backspace if state.search_mode => {
-                    state.search_query.pop();
-                    state.entry_index = 0;
-                }
-                KeyCode::Enter if state.search_mode => {
-                    state.search_mode = false;
-                    state.entry_index = 0;
-                }
-                KeyCode::Char(ch) if state.search_mode => {
-                    state.search_query.push(ch);
-                    state.entry_index = 0;
-                }
-                KeyCode::Char('j') | KeyCode::Down => match state.focus {
-                    Focus::Feeds => {
-                        let feeds = collect_feeds(app);
-                        move_selection(&mut state.feed_index, feeds.len(), 1);
-                        state.entry_index = 0;
+                    KeyCode::Char('a') => {
+                        state.input_mode = Some(InputMode::AddFeed);
+                        state.input_buffer.clear();
                     }
-                    Focus::Entries => {
-                        let feeds = collect_feeds(app);
-                        let entries = filtered_entries(&feeds, state.feed_index, state);
-                        move_selection(&mut state.entry_index, entries.len(), 1);
+                    KeyCode::Char('i') => {
+                        state.input_mode = Some(InputMode::ImportFeeds);
+                        state.input_buffer.clear();
                     }
-                    Focus::Reader => {
-                        state.reader_offset = state.reader_offset.saturating_add(1);
-                    }
-                },
-                KeyCode::Char('k') | KeyCode::Up => match state.focus {
-                    Focus::Feeds => {
-                        let feeds = collect_feeds(app);
-                        move_selection(&mut state.feed_index, feeds.len(), -1);
-                        state.entry_index = 0;
-                    }
-                    Focus::Entries => {
-                        let feeds = collect_feeds(app);
-                        let entries = filtered_entries(&feeds, state.feed_index, state);
-                        move_selection(&mut state.entry_index, entries.len(), -1);
-                    }
-                    Focus::Reader => {
-                        state.reader_offset = state.reader_offset.saturating_sub(1);
-                    }
-                },
-                KeyCode::Enter | KeyCode::Right => {
-                    if state.focus == Focus::Feeds {
-                        state.focus = Focus::Entries;
-                        state.entry_index = 0;
-                        continue;
-                    }
-                    if state.focus == Focus::Entries {
-                        let selection = {
+                    KeyCode::Char('j') | KeyCode::Down => match state.focus {
+                        Focus::Feeds => {
                             let feeds = collect_feeds(app);
-                            feeds.get(state.feed_index).and_then(|feed_ref| {
-                                let entries = filtered_entries(&feeds, state.feed_index, state);
-                                entries.get(state.entry_index).map(|entry_ref| {
-                                    (
-                                        feed_ref.key.clone(),
-                                        entry_ref.entry.key.clone(),
-                                        entry_ref.entry.title.clone(),
-                                    )
-                                })
-                            })
-                        };
-
-                        if let Some((feed_key, entry_key, title)) = selection {
-                            mark_entry_read(app, &feed_key, &entry_key);
-                            state.reader_feed_key = Some(feed_key);
-                            state.reader_entry_key = Some(entry_key);
-                            state.reader_offset = 0;
-                            state.focus = Focus::Reader;
-                            state.status = format!("Reading: {}", title);
-                        } else {
-                            state.status = String::from("No entry selected");
+                            move_selection(&mut state.feed_index, feeds.len(), 1);
+                            state.entry_index = 0;
                         }
-                        continue;
+                        Focus::Entries => {
+                            let feeds = collect_feeds(app);
+                            let entries = filtered_entries(&feeds, state.feed_index, state);
+                            move_selection(&mut state.entry_index, entries.len(), 1);
+                        }
+                        Focus::Reader => {
+                            state.reader_offset = state.reader_offset.saturating_add(1);
+                        }
+                    },
+                    KeyCode::Char('k') | KeyCode::Up => match state.focus {
+                        Focus::Feeds => {
+                            let feeds = collect_feeds(app);
+                            move_selection(&mut state.feed_index, feeds.len(), -1);
+                            state.entry_index = 0;
+                        }
+                        Focus::Entries => {
+                            let feeds = collect_feeds(app);
+                            let entries = filtered_entries(&feeds, state.feed_index, state);
+                            move_selection(&mut state.entry_index, entries.len(), -1);
+                        }
+                        Focus::Reader => {
+                            state.reader_offset = state.reader_offset.saturating_sub(1);
+                        }
+                    },
+                    KeyCode::Enter | KeyCode::Right => {
+                        if state.focus == Focus::Feeds {
+                            state.focus = Focus::Entries;
+                            state.entry_index = 0;
+                            continue;
+                        }
+                        if state.focus == Focus::Entries {
+                            let selection = {
+                                let feeds = collect_feeds(app);
+                                feeds.get(state.feed_index).and_then(|feed_ref| {
+                                    let entries = filtered_entries(&feeds, state.feed_index, state);
+                                    entries.get(state.entry_index).map(|entry_ref| {
+                                        (
+                                            feed_ref.key.clone(),
+                                            entry_ref.entry.key.clone(),
+                                            entry_ref.entry.title.clone(),
+                                        )
+                                    })
+                                })
+                            };
+
+                            if let Some((feed_key, entry_key, _title)) = selection {
+                                mark_entry_read(app, &feed_key, &entry_key);
+                                state.reader_feed_key = Some(feed_key);
+                                state.reader_entry_key = Some(entry_key);
+                                state.reader_offset = 0;
+                                state.focus = Focus::Reader;
+                            } else {
+                                state.notice = Some(String::from("No entry selected"));
+                            }
+                            continue;
+                        }
                     }
+                    KeyCode::Char('r') => match refresh(app) {
+                        Ok(()) => state.notice = Some(String::from("Refresh complete")),
+                        Err(err) => state.notice = Some(format!("Refresh failed: {}", err)),
+                    },
+                    _ => {}
                 }
-                KeyCode::Char('r') => match refresh(app) {
-                    Ok(()) => {
-                        state.status = String::from("Refresh complete");
-                    }
-                    Err(err) => {
-                        state.status = format!("Refresh failed: {}", err);
-                    }
-                },
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
@@ -304,8 +326,10 @@ fn filtered_entries<'a>(
     let mut filtered: Vec<EntryRef<'a>> = entries
         .iter()
         .filter(|entry| {
-            if state.unread_only && entry.is_read {
-                return false;
+            match state.sort_mode {
+                SortMode::UnreadOnly if entry.is_read => return false,
+                SortMode::ReadOnly if !entry.is_read => return false,
+                _ => {}
             }
             if query.is_empty() {
                 return true;
@@ -320,10 +344,9 @@ fn filtered_entries<'a>(
     filtered.sort_by(|a, b| {
         let left = a.entry.published.as_deref().unwrap_or("");
         let right = b.entry.published.as_deref().unwrap_or("");
-        if state.sort_desc {
-            right.cmp(left)
-        } else {
-            left.cmp(right)
+        match state.sort_mode {
+            SortMode::OldFirst => left.cmp(right),
+            _ => right.cmp(left),
         }
     });
     filtered
@@ -353,24 +376,19 @@ fn draw_ui(frame: &mut Frame, app: &AppState, state: &mut TuiState) {
     } else {
         format!("Search: {}", state.search_query)
     };
-    let unread_label = if state.unread_only {
-        "Unread: on"
-    } else {
-        "Unread: off"
+    let input_label = match state.input_mode {
+        Some(InputMode::Search) => format!("Search: {}", state.input_buffer),
+        Some(InputMode::AddFeed) => format!("Add feed: {}", state.input_buffer),
+        Some(InputMode::ImportFeeds) => format!("Import file: {}", state.input_buffer),
+        None => search_label,
     };
-    let sort_label = if state.sort_desc {
-        "Sort: new→old"
-    } else {
-        "Sort: old→new"
-    };
+    let sort_label = state.sort_mode.label();
     let title = Paragraph::new(Line::from(vec![
         Span::styled("RSS Reader", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(format!("  Feeds: {}", feeds.len())),
         Span::raw(format!("  Entries: {}/{}", entries.len(), total_entries)),
-        Span::raw(format!("  {}", unread_label)),
         Span::raw(format!("  {}", sort_label)),
-        Span::raw(format!("  {}", search_label)),
-        Span::raw(format!("  Status: {}", state.status)),
+        Span::raw(format!("  {}", input_label)),
     ]));
     frame.render_widget(title, layout[0]);
 
@@ -444,7 +462,12 @@ fn draw_ui(frame: &mut Frame, app: &AppState, state: &mut TuiState) {
         frame.render_stateful_widget(entry_list, body[1], &mut entry_state);
     }
 
-    let help = Paragraph::new(Line::from(Span::raw(state.help.clone())))
+    let help_text = if let Some(notice) = &state.notice {
+        format!("{}  |  {}", state.help, notice)
+    } else {
+        state.help.clone()
+    };
+    let help = Paragraph::new(Line::from(Span::raw(help_text)))
         .style(Style::default().fg(Color::LightCyan));
     frame.render_widget(help, layout[2]);
 }
@@ -481,5 +504,156 @@ fn mark_entry_read(app: &mut AppState, feed_key: &str, entry_key: &str) {
         if let Some(entry) = feed.entries.iter_mut().find(|entry| entry.key == entry_key) {
             entry.is_read = true;
         }
+    }
+}
+
+fn exit_input_mode(state: &mut TuiState, clear_search: bool) {
+    if state.input_mode == Some(InputMode::Search) && clear_search {
+        state.search_query.clear();
+        state.input_buffer.clear();
+    }
+    state.input_mode = None;
+    if state.notice.is_some() {
+        state.notice = None;
+    }
+}
+
+fn handle_input_key<F>(app: &mut AppState, state: &mut TuiState, refresh: &mut F, key: KeyCode)
+where
+    F: FnMut(&mut AppState) -> io::Result<()>,
+{
+    match key {
+        KeyCode::Esc => exit_input_mode(state, true),
+        KeyCode::Backspace => {
+            state.input_buffer.pop();
+            if state.input_mode == Some(InputMode::Search) {
+                state.search_query = state.input_buffer.clone();
+                state.entry_index = 0;
+            }
+        }
+        KeyCode::Enter => match state.input_mode {
+            Some(InputMode::Search) => {
+                exit_input_mode(state, false);
+                state.entry_index = 0;
+            }
+            Some(InputMode::AddFeed) => handle_add_feed(app, state, refresh),
+            Some(InputMode::ImportFeeds) => handle_import_feeds(app, state, refresh),
+            None => {}
+        },
+        KeyCode::Char(ch) => {
+            state.input_buffer.push(ch);
+            if state.input_mode == Some(InputMode::Search) {
+                state.search_query = state.input_buffer.clone();
+                state.entry_index = 0;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_add_feed<F>(app: &mut AppState, state: &mut TuiState, refresh: &mut F)
+where
+    F: FnMut(&mut AppState) -> io::Result<()>,
+{
+    let raw = state.input_buffer.trim();
+    if raw.is_empty() {
+        state.notice = Some(String::from("Feed URL is empty"));
+        return;
+    }
+
+    match config::validate_feed_url(raw, None) {
+        Ok(validated) => {
+            let added = insert_feed(app, &validated);
+            if added {
+                if let Err(err) = refresh(app) {
+                    state.notice = Some(format!("Refresh failed: {}", err));
+                } else {
+                    state.notice = Some(String::from("Feed added"));
+                }
+                select_feed(state, app, &validated);
+            } else {
+                state.notice = Some(String::from("Feed already exists"));
+            }
+            state.input_buffer.clear();
+            state.input_mode = None;
+        }
+        Err(err) => {
+            state.notice = Some(err.to_string());
+        }
+    }
+}
+
+fn handle_import_feeds<F>(app: &mut AppState, state: &mut TuiState, refresh: &mut F)
+where
+    F: FnMut(&mut AppState) -> io::Result<()>,
+{
+    let raw = state.input_buffer.trim();
+    if raw.is_empty() {
+        state.notice = Some(String::from("Import path is empty"));
+        return;
+    }
+
+    let path = PathBuf::from(raw);
+    match config::parse_feeds_file(&path) {
+        Ok(feeds) => {
+            if feeds.is_empty() {
+                state.notice = Some(String::from("No feeds found in file"));
+                return;
+            }
+
+            let mut first_added: Option<String> = None;
+            let mut added_count = 0;
+            for feed in feeds {
+                if insert_feed(app, &feed) {
+                    if first_added.is_none() {
+                        first_added = Some(feed.clone());
+                    }
+                    added_count += 1;
+                }
+            }
+
+            if added_count == 0 {
+                state.notice = Some(String::from("Feeds already exist"));
+            } else {
+                if let Err(err) = refresh(app) {
+                    state.notice = Some(format!("Refresh failed: {}", err));
+                } else {
+                    state.notice = Some(format!("Imported {} feeds", added_count));
+                }
+                if let Some(feed) = first_added {
+                    select_feed(state, app, &feed);
+                }
+            }
+            state.input_buffer.clear();
+            state.input_mode = None;
+        }
+        Err(err) => {
+            state.notice = Some(err.to_string());
+        }
+    }
+}
+
+fn insert_feed(app: &mut AppState, feed_url: &str) -> bool {
+    if app.feeds.contains_key(feed_url) {
+        return false;
+    }
+
+    app.feeds.insert(
+        feed_url.to_string(),
+        FeedState {
+            feed_url: feed_url.to_string(),
+            title: None,
+            entries: Vec::new(),
+            seen_keys: Vec::new(),
+            read_keys: Vec::new(),
+        },
+    );
+    true
+}
+
+fn select_feed(state: &mut TuiState, app: &AppState, feed_url: &str) {
+    let feeds = collect_feeds(app);
+    if let Some(index) = feeds.iter().position(|feed_ref| feed_ref.key == feed_url) {
+        state.feed_index = index;
     }
 }

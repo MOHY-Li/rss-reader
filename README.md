@@ -48,6 +48,10 @@ Feeds file format rules:
 cargo run -- --feeds feeds.txt --user-agent "my-reader/1.0"
 ```
 
+You can also add feeds from the TUI:
+- Press `a` to add a single feed URL
+- Press `i` to import a feeds file (same format as `--feeds`)
+
 State is persisted at `~/.config/rss-reader/state.json`.
 
 ## Keybindings
@@ -56,8 +60,9 @@ State is persisted at `~/.config/rss-reader/state.json`.
 - `Esc` or `←` to go back
 - `r` to refresh
 - `/` to search (type, Enter to apply, Esc to clear)
-- `u` to toggle unread-only
-- `s` to toggle sort order (new/old)
+- `s` to cycle sort modes (new→old, old→new, unread, read)
+- `a` to add a feed URL
+- `i` to import feeds from a file
 - `q` to quit
 
 ## Notes

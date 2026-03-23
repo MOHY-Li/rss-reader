@@ -33,12 +33,13 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let client = fetcher::build_client(&args)?;
 
     let refresh_client = client.clone();
-    let refresh_feeds = feeds.clone();
+    let initial_feeds = feeds.clone();
     let refresh_state_path = state_path.clone();
     let refresh_seen_cap = seen_cap;
     let refresh_max_items = args.max_items;
     let handle = tokio::runtime::Handle::current();
     let refresh = move |app: &mut AppState| -> io::Result<()> {
+        let refresh_feeds = collect_feed_urls(app, &initial_feeds);
         let refresh_result = tokio::task::block_in_place(|| {
             handle.block_on(refresh_all_feeds(
                 app,
@@ -69,6 +70,15 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 struct RefreshOutcome {
     changed: bool,
     error: Option<io::Error>,
+}
+
+fn collect_feed_urls(app: &AppState, fallback: &[String]) -> Vec<String> {
+    if app.feeds.is_empty() {
+        return fallback.to_vec();
+    }
+    let mut feeds: Vec<String> = app.feeds.keys().cloned().collect();
+    feeds.sort();
+    feeds
 }
 
 async fn refresh_all_feeds(
