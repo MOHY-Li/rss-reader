@@ -52,13 +52,13 @@ State is persisted at `~/.config/rss-reader/state.json`.
 
 ## Keybindings
 - `j`/`k` or arrow keys to move
-- `Tab` to switch panes
-- `Enter` to open the selected item
+- `Enter` to enter feed / open item
+- `Esc` to go back from entries to feeds
 - `r` to refresh
 - `/` to search (type, Enter to apply, Esc to clear)
 - `u` to toggle unread-only
 - `s` to toggle sort order (new/old)
-- `q` or `Esc` to quit
+- `q` to quit
 
 ## Notes
 - The reader keeps a rolling in-memory set of item IDs/links to avoid duplicates.

@@ -39,7 +39,7 @@ impl TuiState {
             entry_index: 0,
             focus: Focus::Feeds,
             status: String::from(
-                "q/Esc quit • Tab switch • j/k move • / search • u unread • Enter open • r refresh",
+                "q quit • Esc back • j/k move • Enter open • / search • u unread • s sort • r refresh",
             ),
             search_query: String::new(),
             search_mode: false,
@@ -99,15 +99,12 @@ where
                         state.search_mode = false;
                         state.search_query.clear();
                         state.entry_index = 0;
+                    } else if state.focus == Focus::Entries {
+                        state.focus = Focus::Feeds;
+                        state.entry_index = 0;
                     } else {
                         break;
                     }
-                }
-                KeyCode::Tab => {
-                    state.focus = match state.focus {
-                        Focus::Feeds => Focus::Entries,
-                        Focus::Entries => Focus::Feeds,
-                    };
                 }
                 KeyCode::Char('/') => {
                     state.search_mode = true;
@@ -161,6 +158,11 @@ where
                     }
                 },
                 KeyCode::Enter => {
+                    if state.focus == Focus::Feeds {
+                        state.focus = Focus::Entries;
+                        state.entry_index = 0;
+                        continue;
+                    }
                     let selection = {
                         let feeds = collect_feeds(app);
                         feeds.get(state.feed_index).and_then(|feed_ref| {
