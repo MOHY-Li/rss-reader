@@ -96,9 +96,7 @@ async fn refresh_all_feeds(
             Ok(feed) => {
                 ensure_feed_state(app, feed_url, seen_cap);
                 if let Some(feed_state) = app.feeds.get_mut(feed_url) {
-                    let (_new_entries, updated, _label) =
-                        apply_feed_update(feed_state, &feed, seen_cap, max_items);
-                    if updated {
+                    if apply_feed_update(feed_state, &feed, seen_cap, max_items) {
                         changed = true;
                     }
                 }
@@ -122,7 +120,6 @@ fn ensure_feed_state(app: &mut AppState, feed_url: &str, seen_cap: usize) {
             title: None,
             entries: Vec::new(),
             seen_keys: Vec::new(),
-            read_keys: Vec::new(),
         }
     });
 
@@ -149,7 +146,7 @@ fn apply_feed_update(
     feed: &ParsedFeed,
     seen_cap: usize,
     max_items: usize,
-) -> (Vec<Entry>, bool, String) {
+) -> bool {
     let mut seen_set: HashSet<String> = feed_state.seen_keys.iter().cloned().collect();
     let mut seen_order: VecDeque<String> = feed_state.seen_keys.iter().cloned().collect();
     while seen_order.len() > seen_cap {
@@ -158,9 +155,7 @@ fn apply_feed_update(
         }
     }
 
-    let mut new_entries = Vec::new();
     let mut new_views = Vec::new();
-    let mut new_keys = HashSet::new();
 
     for (index, entry) in feed.entries.iter().enumerate() {
         let key = entry_key(entry, index);
@@ -169,7 +164,6 @@ fn apply_feed_update(
         }
 
         remember_entry(key.clone(), &mut seen_set, &mut seen_order, seen_cap);
-        new_entries.push(entry.clone());
         new_views.push(EntryView {
             key: key.clone(),
             title: entry_title(entry),
@@ -178,9 +172,8 @@ fn apply_feed_update(
             published: entry.published.map(|value| value.to_rfc3339()),
             is_read: false,
         });
-        new_keys.insert(key);
 
-        if new_entries.len() >= max_items {
+        if new_views.len() >= max_items {
             break;
         }
     }
@@ -190,7 +183,6 @@ fn apply_feed_update(
         let mut combined = new_views;
         combined.extend(feed_state.entries.drain(..));
         feed_state.entries = combined;
-        feed_state.read_keys.retain(|key| !new_keys.contains(key));
         changed = true;
     }
 
@@ -201,14 +193,7 @@ fn apply_feed_update(
     }
 
     feed_state.seen_keys = seen_order.into_iter().collect();
-    let label = feed
-        .feed
-        .title
-        .as_deref()
-        .unwrap_or(&feed_state.feed_url)
-        .to_string();
-
-    (new_entries, changed, label)
+    changed
 }
 
 fn remember_entry(
