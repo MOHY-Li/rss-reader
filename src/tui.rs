@@ -494,7 +494,7 @@ fn draw_ui(frame: &mut Frame, app: &AppState, state: &mut TuiState) {
 }
 
 fn draw_modal(frame: &mut Frame, state: &TuiState, modal: ModalMode) {
-    let area = centered_rect(60, 30, frame.area());
+    let area = centered_rect(30, 10, frame.area());
     frame.render_widget(Clear, area);
 
     let title = match modal {
