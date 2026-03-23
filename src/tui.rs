@@ -8,10 +8,10 @@ use crossterm::{
 use open;
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
 use std::io;
@@ -57,6 +57,12 @@ enum InputMode {
     AddFeed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModalMode {
+    ConfirmDelete,
+    Input,
+}
+
 #[derive(Debug, Clone)]
 struct TuiState {
     feed_index: usize,
@@ -67,6 +73,8 @@ struct TuiState {
     search_query: String,
     input_mode: Option<InputMode>,
     input_buffer: String,
+    modal_mode: Option<ModalMode>,
+    pending_delete: Option<String>,
     sort_mode: SortMode,
 }
 
@@ -83,6 +91,8 @@ impl TuiState {
             search_query: String::new(),
             input_mode: None,
             input_buffer: String::new(),
+            modal_mode: None,
+            pending_delete: None,
             sort_mode: SortMode::NewFirst,
         }
     }
@@ -131,6 +141,11 @@ where
                     break;
                 }
 
+                if state.modal_mode == Some(ModalMode::ConfirmDelete) {
+                    handle_confirm_key(app, state, key.code);
+                    continue;
+                }
+
                 if state.input_mode.is_some() {
                     handle_input_key(app, state, refresh, key.code);
                     continue;
@@ -154,6 +169,7 @@ where
                         state.input_buffer.clear();
                         state.search_query.clear();
                         state.entry_index = 0;
+                        state.modal_mode = Some(ModalMode::Input);
                     }
                     KeyCode::Char('s') => {
                         state.sort_mode = state.sort_mode.next();
@@ -162,10 +178,11 @@ where
                     KeyCode::Char('a') => {
                         state.input_mode = Some(InputMode::AddFeed);
                         state.input_buffer.clear();
+                        state.modal_mode = Some(ModalMode::Input);
                     }
                     KeyCode::Char('d') => {
                         if state.focus == Focus::Feeds {
-                            delete_selected_feed(app, state);
+                            request_delete_selected_feed(app, state);
                         }
                     }
                     KeyCode::Char('j') | KeyCode::Down => match state.focus {
@@ -271,14 +288,23 @@ fn move_selection(index: &mut usize, len: usize, delta: isize) {
     *index = next as usize;
 }
 
-fn delete_selected_feed(app: &mut AppState, state: &mut TuiState) {
+fn request_delete_selected_feed(app: &AppState, state: &mut TuiState) {
     let feeds = collect_feeds(app);
     let Some(feed_ref) = feeds.get(state.feed_index) else {
         state.notice = Some(String::from("No feed selected"));
         return;
     };
-    let key = feed_ref.key.clone();
-    if app.feeds.remove(&key).is_some() {
+    state.pending_delete = Some(feed_ref.key.clone());
+    state.modal_mode = Some(ModalMode::ConfirmDelete);
+}
+
+fn confirm_delete_selected_feed(app: &mut AppState, state: &mut TuiState) {
+    let Some(feed_key) = state.pending_delete.take() else {
+        state.modal_mode = None;
+        return;
+    };
+
+    if app.feeds.remove(&feed_key).is_some() {
         state.notice = Some(String::from("Feed deleted"));
         state.entry_index = 0;
         if state.feed_index > 0 {
@@ -291,6 +317,8 @@ fn delete_selected_feed(app: &mut AppState, state: &mut TuiState) {
     } else {
         state.notice = Some(String::from("Feed not found"));
     }
+
+    state.modal_mode = None;
 }
 
 struct FeedRef<'a> {
@@ -459,6 +487,89 @@ fn draw_ui(frame: &mut Frame, app: &AppState, state: &mut TuiState) {
     let help = Paragraph::new(Line::from(Span::raw(help_text)))
         .style(Style::default().fg(Color::LightCyan));
     frame.render_widget(help, layout[2]);
+
+    if let Some(modal) = state.modal_mode {
+        draw_modal(frame, state, modal);
+    }
+}
+
+fn draw_modal(frame: &mut Frame, state: &TuiState, modal: ModalMode) {
+    let area = centered_rect(60, 30, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = match modal {
+        ModalMode::ConfirmDelete => "Confirm delete",
+        ModalMode::Input => match state.input_mode {
+            Some(InputMode::Search) => "Search",
+            Some(InputMode::AddFeed) => "Add feed",
+            None => "Input",
+        },
+    };
+
+    let block = Block::default().borders(Borders::ALL).title(title);
+    frame.render_widget(block, area);
+
+    let inner = Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    match modal {
+        ModalMode::ConfirmDelete => {
+            let feed_label = state.pending_delete.as_deref().unwrap_or("selected feed");
+            let lines = vec![
+                Line::from(format!("Delete {}?", feed_label)),
+                Line::from("Press y to confirm, n or Esc to cancel"),
+            ];
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
+        ModalMode::Input => {
+            let (prompt, hint) = match state.input_mode {
+                Some(InputMode::Search) => ("Search query:", "Enter to apply, Esc to cancel"),
+                Some(InputMode::AddFeed) => (
+                    "Feed URL or file path:",
+                    "Enter to add/import, Esc to cancel",
+                ),
+                None => ("", ""),
+            };
+            let lines = vec![
+                Line::from(prompt),
+                Line::from(state.input_buffer.clone()),
+                Line::from(hint),
+            ];
+            frame.render_widget(Paragraph::new(lines), inner);
+
+            let cursor_x = inner
+                .x
+                .saturating_add(state.input_buffer.chars().count() as u16);
+            let cursor_y = inner.y.saturating_add(1);
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1]);
+
+    horizontal[1]
 }
 
 fn mark_entry_read(app: &mut AppState, feed_key: &str, entry_key: &str) {
@@ -475,6 +586,9 @@ fn exit_input_mode(state: &mut TuiState, clear_search: bool) {
         state.input_buffer.clear();
     }
     state.input_mode = None;
+    if state.modal_mode == Some(ModalMode::Input) {
+        state.modal_mode = None;
+    }
     if state.notice.is_some() {
         state.notice = None;
     }
@@ -507,6 +621,17 @@ where
                 state.search_query = state.input_buffer.clone();
                 state.entry_index = 0;
             }
+        }
+        _ => {}
+    }
+}
+
+fn handle_confirm_key(app: &mut AppState, state: &mut TuiState, key: KeyCode) {
+    match key {
+        KeyCode::Char('y') | KeyCode::Char('Y') => confirm_delete_selected_feed(app, state),
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            state.pending_delete = None;
+            state.modal_mode = None;
         }
         _ => {}
     }
@@ -556,6 +681,7 @@ where
                 }
                 state.input_buffer.clear();
                 state.input_mode = None;
+                state.modal_mode = None;
             }
             Err(err) => {
                 state.notice = Some(err.to_string());
@@ -579,6 +705,7 @@ where
             }
             state.input_buffer.clear();
             state.input_mode = None;
+            state.modal_mode = None;
         }
         Err(err) => {
             state.notice = Some(err.to_string());
