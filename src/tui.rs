@@ -55,7 +55,6 @@ impl SortMode {
 enum InputMode {
     Search,
     AddFeed,
-    ImportFeeds,
 }
 
 #[derive(Debug, Clone)]
@@ -78,7 +77,7 @@ impl TuiState {
             entry_index: 0,
             focus: Focus::Feeds,
             help: String::from(
-                "q quit • Esc/← back • Enter/→ enter • j/k move • / search • s sort • a add • i import • r refresh",
+                "q quit • Esc/← back • Enter/→ enter • j/k move • / search • s sort • a add/import • r refresh",
             ),
             notice: None,
             search_query: String::new(),
@@ -162,10 +161,6 @@ where
                     }
                     KeyCode::Char('a') => {
                         state.input_mode = Some(InputMode::AddFeed);
-                        state.input_buffer.clear();
-                    }
-                    KeyCode::Char('i') => {
-                        state.input_mode = Some(InputMode::ImportFeeds);
                         state.input_buffer.clear();
                     }
                     KeyCode::Char('j') | KeyCode::Down => match state.focus {
@@ -361,7 +356,6 @@ fn draw_ui(frame: &mut Frame, app: &AppState, state: &mut TuiState) {
     let input_label = match state.input_mode {
         Some(InputMode::Search) => format!("Search: {}", state.input_buffer),
         Some(InputMode::AddFeed) => format!("Add feed: {}", state.input_buffer),
-        Some(InputMode::ImportFeeds) => format!("Import file: {}", state.input_buffer),
         None => search_label,
     };
     let sort_label = state.sort_mode.label();
@@ -478,7 +472,6 @@ where
                 state.entry_index = 0;
             }
             Some(InputMode::AddFeed) => handle_add_feed(app, state, refresh),
-            Some(InputMode::ImportFeeds) => handle_import_feeds(app, state, refresh),
             None => {}
         },
         KeyCode::Char(ch) => {
@@ -498,7 +491,49 @@ where
 {
     let raw = state.input_buffer.trim();
     if raw.is_empty() {
-        state.notice = Some(String::from("Feed URL is empty"));
+        state.notice = Some(String::from("Feed URL or file path is empty"));
+        return;
+    }
+
+    let path = PathBuf::from(raw);
+    if path.is_file() {
+        match config::parse_feeds_file(&path) {
+            Ok(feeds) => {
+                if feeds.is_empty() {
+                    state.notice = Some(String::from("No feeds found in file"));
+                    return;
+                }
+
+                let mut first_added: Option<String> = None;
+                let mut added_count = 0;
+                for feed in feeds {
+                    if insert_feed(app, &feed) {
+                        if first_added.is_none() {
+                            first_added = Some(feed.clone());
+                        }
+                        added_count += 1;
+                    }
+                }
+
+                if added_count == 0 {
+                    state.notice = Some(String::from("Feeds already exist"));
+                } else {
+                    if let Err(err) = refresh(app) {
+                        state.notice = Some(format!("Refresh failed: {}", err));
+                    } else {
+                        state.notice = Some(format!("Imported {} feeds", added_count));
+                    }
+                    if let Some(feed) = first_added {
+                        select_feed(state, app, &feed);
+                    }
+                }
+                state.input_buffer.clear();
+                state.input_mode = None;
+            }
+            Err(err) => {
+                state.notice = Some(err.to_string());
+            }
+        }
         return;
     }
 
@@ -514,56 +549,6 @@ where
                 select_feed(state, app, &validated);
             } else {
                 state.notice = Some(String::from("Feed already exists"));
-            }
-            state.input_buffer.clear();
-            state.input_mode = None;
-        }
-        Err(err) => {
-            state.notice = Some(err.to_string());
-        }
-    }
-}
-
-fn handle_import_feeds<F>(app: &mut AppState, state: &mut TuiState, refresh: &mut F)
-where
-    F: FnMut(&mut AppState) -> io::Result<()>,
-{
-    let raw = state.input_buffer.trim();
-    if raw.is_empty() {
-        state.notice = Some(String::from("Import path is empty"));
-        return;
-    }
-
-    let path = PathBuf::from(raw);
-    match config::parse_feeds_file(&path) {
-        Ok(feeds) => {
-            if feeds.is_empty() {
-                state.notice = Some(String::from("No feeds found in file"));
-                return;
-            }
-
-            let mut first_added: Option<String> = None;
-            let mut added_count = 0;
-            for feed in feeds {
-                if insert_feed(app, &feed) {
-                    if first_added.is_none() {
-                        first_added = Some(feed.clone());
-                    }
-                    added_count += 1;
-                }
-            }
-
-            if added_count == 0 {
-                state.notice = Some(String::from("Feeds already exist"));
-            } else {
-                if let Err(err) = refresh(app) {
-                    state.notice = Some(format!("Refresh failed: {}", err));
-                } else {
-                    state.notice = Some(format!("Imported {} feeds", added_count));
-                }
-                if let Some(feed) = first_added {
-                    select_feed(state, app, &feed);
-                }
             }
             state.input_buffer.clear();
             state.input_mode = None;
