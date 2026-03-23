@@ -7,13 +7,14 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
 use std::io;
+use std::io::Cursor;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -399,7 +400,7 @@ fn draw_ui(frame: &mut Frame, app: &AppState, state: &mut TuiState) {
 
     let (feed_items, entry_items, reader_widget) = match state.focus {
         Focus::Reader => {
-            let reader = build_reader_widget(app, state);
+            let reader = build_reader_widget(app, state, layout[1]);
             (Vec::new(), Vec::new(), Some(reader))
         }
         _ => {
@@ -472,7 +473,7 @@ fn draw_ui(frame: &mut Frame, app: &AppState, state: &mut TuiState) {
     frame.render_widget(help, layout[2]);
 }
 
-fn build_reader_widget<'a>(app: &'a AppState, state: &TuiState) -> Paragraph<'a> {
+fn build_reader_widget<'a>(app: &'a AppState, state: &mut TuiState, area: Rect) -> Paragraph<'a> {
     let mut content = String::from("(no content)");
     let mut title = String::from("Reader");
     if let (Some(feed_key), Some(entry_key)) = (&state.reader_feed_key, &state.reader_entry_key) {
@@ -488,15 +489,33 @@ fn build_reader_widget<'a>(app: &'a AppState, state: &TuiState) -> Paragraph<'a>
         }
     }
 
-    let lines: Vec<Line> = content
+    let width = area.width.saturating_sub(2).max(1) as usize;
+    let rendered = html_to_text(&content, width);
+    let mut wrapped_lines: Vec<Line> = rendered
         .lines()
         .map(|line| Line::from(Span::raw(line.to_string())))
         .collect();
+    if wrapped_lines.is_empty() {
+        wrapped_lines.push(Line::from(Span::raw("")));
+    }
 
-    let start = state.reader_offset.min(lines.len());
-    let visible: Vec<Line> = lines.into_iter().skip(start).collect();
+    let visible_height = area.height.saturating_sub(2) as usize;
+    let max_offset = wrapped_lines.len().saturating_sub(visible_height);
+    if state.reader_offset > max_offset {
+        state.reader_offset = max_offset;
+    }
 
-    Paragraph::new(visible).block(Block::default().borders(Borders::ALL).title(title))
+    Paragraph::new(wrapped_lines)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .scroll((state.reader_offset as u16, 0))
+}
+
+fn html_to_text(input: &str, width: usize) -> String {
+    let cursor = Cursor::new(input.as_bytes());
+    match html2text::from_read(cursor, width) {
+        Ok(output) => output,
+        Err(_) => input.to_string(),
+    }
 }
 
 fn mark_entry_read(app: &mut AppState, feed_key: &str, entry_key: &str) {
