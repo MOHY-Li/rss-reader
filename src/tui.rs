@@ -96,9 +96,10 @@ impl TuiState {
     }
 }
 
-pub fn run_tui<F>(app: &mut AppState, mut refresh: F) -> io::Result<()>
+pub fn run_tui<F, G>(app: &mut AppState, mut refresh: F, mut fetch_full: G) -> io::Result<()>
 where
     F: FnMut(&mut AppState) -> io::Result<()>,
+    G: FnMut(&str) -> io::Result<String>,
 {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -111,7 +112,13 @@ where
     if let Err(err) = refresh(app) {
         state.notice = Some(format!("Refresh failed: {}", err));
     }
-    let result = run_loop(&mut terminal, app, &mut state, &mut refresh);
+    let result = run_loop(
+        &mut terminal,
+        app,
+        &mut state,
+        &mut refresh,
+        &mut fetch_full,
+    );
 
     let _ = disable_raw_mode();
     let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
@@ -120,14 +127,16 @@ where
     result
 }
 
-fn run_loop<F>(
+fn run_loop<F, G>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut AppState,
     state: &mut TuiState,
     refresh: &mut F,
+    fetch_full: &mut G,
 ) -> io::Result<()>
 where
     F: FnMut(&mut AppState) -> io::Result<()>,
+    G: FnMut(&str) -> io::Result<String>,
 {
     loop {
         normalize_state(app, state);
@@ -234,6 +243,7 @@ where
 
                             if let Some((feed_key, entry_key, _title)) = selection {
                                 mark_entry_read(app, &feed_key, &entry_key);
+                                maybe_fetch_full_entry(app, &feed_key, &entry_key, fetch_full);
                                 state.reader_feed_key = Some(feed_key);
                                 state.reader_entry_key = Some(entry_key);
                                 state.reader_offset = 0;
@@ -515,6 +525,38 @@ fn html_to_text(input: &str, width: usize) -> String {
     match html2text::from_read(cursor, width) {
         Ok(output) => output,
         Err(_) => input.to_string(),
+    }
+}
+
+fn maybe_fetch_full_entry<F>(
+    app: &mut AppState,
+    feed_key: &str,
+    entry_key: &str,
+    fetch_full: &mut F,
+) where
+    F: FnMut(&str) -> io::Result<String>,
+{
+    let Some(feed) = app.feeds.get_mut(feed_key) else {
+        return;
+    };
+    let Some(entry) = feed.entries.iter_mut().find(|entry| entry.key == entry_key) else {
+        return;
+    };
+
+    if entry.content.trim().len() >= 200 {
+        return;
+    }
+    if entry.link.trim().is_empty() {
+        return;
+    }
+
+    match fetch_full(&entry.link) {
+        Ok(content) => {
+            if !content.trim().is_empty() {
+                entry.content = content;
+            }
+        }
+        Err(_) => {}
     }
 }
 
