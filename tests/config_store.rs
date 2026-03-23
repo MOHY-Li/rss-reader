@@ -93,6 +93,7 @@ fn save_and_load_state_round_trip() {
                 key: "entry-1".to_string(),
                 title: "Entry One".to_string(),
                 link: "https://example.com/entry-1".to_string(),
+                content: "Example content".to_string(),
                 published: None,
                 is_read: false,
             }],

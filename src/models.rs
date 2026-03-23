@@ -7,6 +7,8 @@ pub struct EntryView {
     pub title: String,
     pub link: String,
     #[serde(default)]
+    pub content: String,
+    #[serde(default)]
     pub published: Option<String>,
     pub is_read: bool,
 }

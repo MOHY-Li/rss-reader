@@ -52,8 +52,8 @@ State is persisted at `~/.config/rss-reader/state.json`.
 
 ## Keybindings
 - `j`/`k` or arrow keys to move
-- `Enter` to enter feed / open item
-- `Esc` to go back from entries to feeds
+- `Enter` or `→` to enter feed / open item
+- `Esc` or `←` to go back
 - `r` to refresh
 - `/` to search (type, Enter to apply, Esc to clear)
 - `u` to toggle unread-only
@@ -64,3 +64,4 @@ State is persisted at `~/.config/rss-reader/state.json`.
 - The reader keeps a rolling in-memory set of item IDs/links to avoid duplicates.
 - If a feed lacks IDs and links, it falls back to title/summary-based keys.
 - Interval and seen-cap values are clamped to at least 1 to avoid busy loops or empty caches.
+- Reader view shows RSS content or summary inline.

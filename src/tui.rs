@@ -18,6 +18,7 @@ use std::io;
 enum Focus {
     Feeds,
     Entries,
+    Reader,
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,10 @@ struct TuiState {
     entry_index: usize,
     focus: Focus,
     status: String,
+    help: String,
+    reader_offset: usize,
+    reader_feed_key: Option<String>,
+    reader_entry_key: Option<String>,
     search_query: String,
     search_mode: bool,
     unread_only: bool,
@@ -38,9 +43,13 @@ impl TuiState {
             feed_index: 0,
             entry_index: 0,
             focus: Focus::Feeds,
-            status: String::from(
-                "q quit • Esc back • j/k move • Enter open • / search • u unread • s sort • r refresh",
+            status: String::from("Ready"),
+            help: String::from(
+                "q quit • Esc/← back • Enter/→ enter • j/k move • / search • u unread • s sort • r refresh",
             ),
+            reader_offset: 0,
+            reader_feed_key: None,
+            reader_entry_key: None,
             search_query: String::new(),
             search_mode: false,
             unread_only: false,
@@ -99,11 +108,23 @@ where
                         state.search_mode = false;
                         state.search_query.clear();
                         state.entry_index = 0;
+                    } else if state.focus == Focus::Reader {
+                        state.focus = Focus::Entries;
+                        state.reader_offset = 0;
                     } else if state.focus == Focus::Entries {
                         state.focus = Focus::Feeds;
                         state.entry_index = 0;
                     } else {
-                        break;
+                        state.status = String::from("Press q to quit");
+                    }
+                }
+                KeyCode::Left => {
+                    if state.focus == Focus::Reader {
+                        state.focus = Focus::Entries;
+                        state.reader_offset = 0;
+                    } else if state.focus == Focus::Entries {
+                        state.focus = Focus::Feeds;
+                        state.entry_index = 0;
                     }
                 }
                 KeyCode::Char('/') => {
@@ -144,6 +165,9 @@ where
                         let entries = filtered_entries(&feeds, state.feed_index, state);
                         move_selection(&mut state.entry_index, entries.len(), 1);
                     }
+                    Focus::Reader => {
+                        state.reader_offset = state.reader_offset.saturating_add(1);
+                    }
                 },
                 KeyCode::Char('k') | KeyCode::Up => match state.focus {
                     Focus::Feeds => {
@@ -156,45 +180,42 @@ where
                         let entries = filtered_entries(&feeds, state.feed_index, state);
                         move_selection(&mut state.entry_index, entries.len(), -1);
                     }
+                    Focus::Reader => {
+                        state.reader_offset = state.reader_offset.saturating_sub(1);
+                    }
                 },
-                KeyCode::Enter => {
+                KeyCode::Enter | KeyCode::Right => {
                     if state.focus == Focus::Feeds {
                         state.focus = Focus::Entries;
                         state.entry_index = 0;
                         continue;
                     }
-                    let selection = {
-                        let feeds = collect_feeds(app);
-                        feeds.get(state.feed_index).and_then(|feed_ref| {
-                            let entries = filtered_entries(&feeds, state.feed_index, state);
-                            entries.get(state.entry_index).map(|entry_ref| {
-                                (
-                                    feed_ref.key.clone(),
-                                    entry_ref.index,
-                                    entry_ref.entry.link.clone(),
-                                    entry_ref.entry.title.clone(),
-                                )
+                    if state.focus == Focus::Entries {
+                        let selection = {
+                            let feeds = collect_feeds(app);
+                            feeds.get(state.feed_index).and_then(|feed_ref| {
+                                let entries = filtered_entries(&feeds, state.feed_index, state);
+                                entries.get(state.entry_index).map(|entry_ref| {
+                                    (
+                                        feed_ref.key.clone(),
+                                        entry_ref.entry.key.clone(),
+                                        entry_ref.entry.title.clone(),
+                                    )
+                                })
                             })
-                        })
-                    };
+                        };
 
-                    if let Some((feed_key, entry_index, link, title)) = selection {
-                        let open_result = open::that(&link);
-                        if let Some(feed) = app.feeds.get_mut(&feed_key) {
-                            if let Some(entry) = feed.entries.get_mut(entry_index) {
-                                entry.is_read = true;
-                            }
+                        if let Some((feed_key, entry_key, title)) = selection {
+                            mark_entry_read(app, &feed_key, &entry_key);
+                            state.reader_feed_key = Some(feed_key);
+                            state.reader_entry_key = Some(entry_key);
+                            state.reader_offset = 0;
+                            state.focus = Focus::Reader;
+                            state.status = format!("Reading: {}", title);
+                        } else {
+                            state.status = String::from("No entry selected");
                         }
-                        match open_result {
-                            Ok(_) => {
-                                state.status = format!("Opened: {}", title);
-                            }
-                            Err(err) => {
-                                state.status = format!("Failed to open link: {}", err);
-                            }
-                        }
-                    } else {
-                        state.status = String::from("No entry selected");
+                        continue;
                     }
                 }
                 KeyCode::Char('r') => match refresh(app) {
@@ -219,6 +240,9 @@ fn normalize_state(app: &AppState, state: &mut TuiState) {
     normalize_selection(&mut state.feed_index, feeds.len());
     let entries = filtered_entries(&feeds, state.feed_index, state);
     normalize_selection(&mut state.entry_index, entries.len());
+    if state.focus == Focus::Reader && state.reader_entry_key.is_none() {
+        state.focus = Focus::Entries;
+    }
 }
 
 fn normalize_selection(index: &mut usize, len: usize) -> Option<usize> {
@@ -263,7 +287,6 @@ fn feed_label(feed: &FeedState) -> String {
 }
 
 struct EntryRef<'a> {
-    index: usize,
     entry: &'a EntryView,
 }
 
@@ -280,8 +303,7 @@ fn filtered_entries<'a>(
     let query = state.search_query.trim().to_lowercase();
     let mut filtered: Vec<EntryRef<'a>> = entries
         .iter()
-        .enumerate()
-        .filter(|(_, entry)| {
+        .filter(|entry| {
             if state.unread_only && entry.is_read {
                 return false;
             }
@@ -292,7 +314,7 @@ fn filtered_entries<'a>(
             let link = entry.link.to_lowercase();
             title.contains(&query) || link.contains(&query)
         })
-        .map(|(idx, entry)| EntryRef { index: idx, entry })
+        .map(|entry| EntryRef { entry })
         .collect();
 
     filtered.sort_by(|a, b| {
@@ -348,6 +370,7 @@ fn draw_ui(frame: &mut Frame, app: &AppState, state: &mut TuiState) {
         Span::raw(format!("  {}", unread_label)),
         Span::raw(format!("  {}", sort_label)),
         Span::raw(format!("  {}", search_label)),
+        Span::raw(format!("  Status: {}", state.status)),
     ]));
     frame.render_widget(title, layout[0]);
 
@@ -356,58 +379,107 @@ fn draw_ui(frame: &mut Frame, app: &AppState, state: &mut TuiState) {
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(layout[1]);
 
-    let feed_items: Vec<ListItem> = feeds
-        .iter()
-        .map(|feed_ref| {
-            ListItem::new(format!(
-                "{} ({})",
-                feed_label(feed_ref.feed),
-                feed_ref.feed.entries.len()
-            ))
-        })
-        .collect();
+    let (feed_items, entry_items, reader_widget) = match state.focus {
+        Focus::Reader => {
+            let reader = build_reader_widget(app, state);
+            (Vec::new(), Vec::new(), Some(reader))
+        }
+        _ => {
+            let feed_items: Vec<ListItem> = feeds
+                .iter()
+                .map(|feed_ref| {
+                    ListItem::new(format!(
+                        "{} ({})",
+                        feed_label(feed_ref.feed),
+                        feed_ref.feed.entries.len()
+                    ))
+                })
+                .collect();
 
-    let entry_items: Vec<ListItem> = entries
-        .iter()
-        .map(|entry_ref| {
-            let entry = entry_ref.entry;
-            let prefix = if entry.is_read { "✓" } else { "•" };
-            ListItem::new(format!("{} {}", prefix, entry.title))
-        })
-        .collect();
+            let entry_items: Vec<ListItem> = entries
+                .iter()
+                .map(|entry_ref| {
+                    let entry = entry_ref.entry;
+                    let prefix = if entry.is_read { "✓" } else { "•" };
+                    ListItem::new(format!("{} {}", prefix, entry.title))
+                })
+                .collect();
+
+            (feed_items, entry_items, None)
+        }
+    };
 
     let focus_style = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
     let inactive_style = Style::default().add_modifier(Modifier::DIM);
 
-    let feed_list = List::new(feed_items)
-        .block(Block::default().borders(Borders::ALL).title("Feeds"))
-        .highlight_symbol("> ")
-        .highlight_style(if state.focus == Focus::Feeds {
-            focus_style
-        } else {
-            inactive_style
-        });
+    if let Some(reader) = reader_widget {
+        frame.render_widget(reader, layout[1]);
+    } else {
+        let feed_list = List::new(feed_items)
+            .block(Block::default().borders(Borders::ALL).title("Feeds"))
+            .highlight_symbol("> ")
+            .highlight_style(if state.focus == Focus::Feeds {
+                focus_style
+            } else {
+                inactive_style
+            });
 
-    let entry_list = List::new(entry_items)
-        .block(Block::default().borders(Borders::ALL).title("Entries"))
-        .highlight_symbol("> ")
-        .highlight_style(if state.focus == Focus::Entries {
-            focus_style
-        } else {
-            inactive_style
-        });
+        let entry_list = List::new(entry_items)
+            .block(Block::default().borders(Borders::ALL).title("Entries"))
+            .highlight_symbol("> ")
+            .highlight_style(if state.focus == Focus::Entries {
+                focus_style
+            } else {
+                inactive_style
+            });
 
-    let mut feed_state = ListState::default();
-    feed_state.select(feed_selected);
-    frame.render_stateful_widget(feed_list, body[0], &mut feed_state);
+        let mut feed_state = ListState::default();
+        feed_state.select(feed_selected);
+        frame.render_stateful_widget(feed_list, body[0], &mut feed_state);
 
-    let mut entry_state = ListState::default();
-    entry_state.select(entry_selected);
-    frame.render_stateful_widget(entry_list, body[1], &mut entry_state);
+        let mut entry_state = ListState::default();
+        entry_state.select(entry_selected);
+        frame.render_stateful_widget(entry_list, body[1], &mut entry_state);
+    }
 
-    let status = Paragraph::new(Line::from(Span::raw(state.status.clone())))
+    let help = Paragraph::new(Line::from(Span::raw(state.help.clone())))
         .style(Style::default().fg(Color::LightCyan));
-    frame.render_widget(status, layout[2]);
+    frame.render_widget(help, layout[2]);
+}
+
+fn build_reader_widget<'a>(app: &'a AppState, state: &TuiState) -> Paragraph<'a> {
+    let mut content = String::from("(no content)");
+    let mut title = String::from("Reader");
+    if let (Some(feed_key), Some(entry_key)) = (&state.reader_feed_key, &state.reader_entry_key) {
+        if let Some(feed) = app.feeds.get(feed_key) {
+            if let Some(entry) = feed.entries.iter().find(|entry| &entry.key == entry_key) {
+                title = entry.title.clone();
+                if !entry.content.is_empty() {
+                    content = entry.content.clone();
+                } else if !entry.link.is_empty() {
+                    content = entry.link.clone();
+                }
+            }
+        }
+    }
+
+    let lines: Vec<Line> = content
+        .lines()
+        .map(|line| Line::from(Span::raw(line.to_string())))
+        .collect();
+
+    let start = state.reader_offset.min(lines.len());
+    let visible: Vec<Line> = lines.into_iter().skip(start).collect();
+
+    Paragraph::new(visible).block(Block::default().borders(Borders::ALL).title(title))
+}
+
+fn mark_entry_read(app: &mut AppState, feed_key: &str, entry_key: &str) {
+    if let Some(feed) = app.feeds.get_mut(feed_key) {
+        if let Some(entry) = feed.entries.iter_mut().find(|entry| entry.key == entry_key) {
+            entry.is_read = true;
+        }
+    }
 }

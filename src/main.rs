@@ -164,6 +164,7 @@ fn apply_feed_update(
             key: key.clone(),
             title: entry_title(entry),
             link: entry_link(entry),
+            content: entry_content(entry),
             published: entry.published.map(|value| value.to_rfc3339()),
             is_read: false,
         });
@@ -259,4 +260,11 @@ fn entry_link(entry: &Entry) -> String {
         .or_else(|| entry.links.first().map(|link| link.href.as_str()))
         .unwrap_or("")
         .to_string()
+}
+
+fn entry_content(entry: &Entry) -> String {
+    if let Some(content) = entry.content.first() {
+        return content.value.clone();
+    }
+    entry.summary.clone().unwrap_or_default()
 }
